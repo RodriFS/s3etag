@@ -1,12 +1,11 @@
 use clap::{App, Arg};
-use md5;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::Read;
 
 fn main() {
     let matches = App::new("s3etag")
-        .version("1.0")
+        .version("1.1")
         .about("It compares a file checksum to an s3 e-tag")
         .arg(
             Arg::with_name("filepath")
@@ -25,6 +24,15 @@ fn main() {
                 .help("The s3 object e-tag")
                 .takes_value(true)
                 .required(true),
+        )
+        .arg(
+            Arg::with_name("chunk_size")
+                .short("c")
+                .long("chunksize")
+                .value_name("SIZE")
+                .help("The s3 object chunk size, if known")
+                .takes_value(true)
+                .required(false),
         )
         .get_matches();
 
@@ -45,7 +53,7 @@ fn main() {
 
     let mut buffer = Vec::new();
     f.read_to_end(&mut buffer).unwrap();
-    if buffer.len() == 0 {
+    if buffer.is_empty() {
         eprintln!("Error: File is empty");
         std::process::exit(0);
     }
@@ -53,7 +61,7 @@ fn main() {
         etag_error()
     }
 
-    let result = guess_etag_parallel(buffer, etag);
+    let result = guess_etag_parallel(buffer, etag, matches.value_of("chunk_size"));
     println!("{}", result);
 }
 
@@ -63,7 +71,7 @@ fn etag_error() -> ! {
 }
 
 fn success_exit_early() -> ! {
-    println!("{}", true);
+    println!("{:?}", true);
     std::process::exit(0);
 }
 
@@ -75,40 +83,60 @@ fn compute_simple(buffer: Vec<u8>, etag: &str, chunks: u32) -> bool {
     }
 }
 
-fn compute_concat(size: (usize, usize), chunks: u32, buffer: Vec<u8>, etag: &str) -> bool {
-    match (size.0..size.1).rev().par_bridge().find_any(|size| {
-        let final_md5: Vec<u8> = buffer
-            .par_chunks(size * 1024 * 1024)
-            .into_par_iter()
-            .flat_map(|b| md5::compute(b).to_vec())
-            .collect();
-        let calc_etag = md5::compute(final_md5);
-        if format!("{:x}-{}", calc_etag, chunks) == etag {
-            success_exit_early();
-        }
-        false
-    }) {
-        Some(_) => true,
-        None => false,
+#[derive(Debug)]
+enum Size {
+    Fixed(usize),
+    Variable((usize, usize)),
+}
+
+fn compute(size: usize, chunks: usize, buffer: &[u8], etag: &str) {
+    let final_md5: Vec<u8> = buffer
+        .par_chunks(size * 1024 * 1024)
+        .into_par_iter()
+        .flat_map(|b| md5::compute(b).to_vec())
+        .collect();
+    let calc_etag = md5::compute(final_md5);
+    if format!("{:x}-{}", calc_etag, chunks) == etag {
+        success_exit_early();
     }
 }
 
-fn guess_etag_parallel(buffer: Vec<u8>, etag: &str) -> bool {
-    let mut etag_parts: Vec<&str> = etag.split("-").collect();
+fn compute_concat(size: Size, chunks: usize, buffer: Vec<u8>, etag: &str) -> bool {
+    match size {
+        Size::Fixed(c) => {
+            compute(c, chunks, &buffer, etag);
+            false
+        }
+        Size::Variable(size) => {
+            (size.0..size.1 + 1).into_par_iter().rev().for_each(|size| {
+                compute(size, chunks, &buffer, etag);
+            });
+            false
+        }
+    }
+}
+
+fn guess_etag_parallel(buffer: Vec<u8>, etag: &str, chunk_size: Option<&str>) -> bool {
+    let mut etag_parts: Vec<&str> = etag.split('-').collect();
     match etag_parts.len() {
         1 => compute_simple(buffer, etag, 1),
         2 => {
-            let chunks: u32 = match etag_parts.pop().unwrap().parse() {
+            let chunks: usize = match etag_parts.pop().unwrap().parse() {
                 Ok(c) if c > 1 => c,
                 _ => etag_error(),
             };
+            if let Some(c) = chunk_size {
+                let chunk_size: usize = c.parse().expect("Invalid chunk size");
+                return compute_concat(Size::Fixed(chunk_size), chunks, buffer, etag);
+            }
+
             let file_size = buffer.len() / 1024 / 1024;
-            let min_sz = file_size / chunks as usize;
-            let max_sz = file_size / (chunks as usize - 1);
+            let min_sz = file_size / chunks;
+            let max_sz = file_size / (chunks - 1);
             if min_sz == max_sz {
-                compute_simple(buffer, etag, chunks)
+                compute_concat(Size::Fixed(min_sz), chunks, buffer, etag)
             } else {
-                compute_concat((min_sz, max_sz), chunks, buffer, etag)
+                compute_concat(Size::Variable((min_sz, max_sz)), chunks, buffer, etag)
             }
         }
         _ => etag_error(),

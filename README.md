@@ -1,6 +1,6 @@
 # s3etag
 
-An executable to know if an s3 file was downloaded correctly
+Parallel computation of s3 multipart e-tag
 
 ## How to use
 
