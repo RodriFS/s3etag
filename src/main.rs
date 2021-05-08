@@ -29,7 +29,7 @@ fn main() {
             Arg::with_name("chunk_size")
                 .short("c")
                 .long("chunksize")
-                .value_name("SIZE")
+                .value_name("SIZE IN MB")
                 .help("The s3 object chunk size, if known")
                 .takes_value(true)
                 .required(false),

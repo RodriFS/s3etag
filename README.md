@@ -18,6 +18,7 @@ FLAGS:
     -V, --version    Prints version information
 
 OPTIONS:
+    -c, --chunksize <SIZE IN MB> The s3 object chunk size, if known
     -e, --etag <TAG>         The s3 object e-tag
     -f, --filepath <FILE>    The path of the file you want to check
 ```
