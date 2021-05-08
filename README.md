@@ -7,7 +7,7 @@ Parallel computation of s3 multipart e-tag
 ```
 s3etag -h
 
-s3etag 1.0
+s3etag 1.1
 It compares a file checksum to an s3 e-tag
 
 USAGE:
